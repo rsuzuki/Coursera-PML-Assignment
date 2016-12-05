@@ -1,0 +1,213 @@
+---
+title: "Predicting the Correctness of Barbell Lifting"
+author: "Rodrigo Suzuki Okada"
+date: "12/2/2016"
+output: html_document
+---
+
+# Introduction
+
+## Background
+
+The advent of wearable devices has made it possible to collect large amounts of data from personal activity, which is often used to evaluate personal health and how it could be improved. However, most analysis evaluate how much of a particular activity a person does, but they rarely quantify how well they do it.
+
+The objective of this analysis is to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants, and evaluate if they perform barbell lifting in a correct manner. The data itself is available [here](http://groupware.les.inf.puc-rio.br/har).
+
+This project is part of the Coursera's *Practical Machine Learning* course, available [here](https://www.coursera.org/learn/practical-machine-learning).
+
+## Data
+
+The data for this analysis can be found below:
+
+```{r, echo=T}
+downloadIfDoesNotExist <- function(filename, url) {
+    if (!file.exists(filename)) { download.file(url, filename, quiet = T) }
+}
+downloadIfDoesNotExist("pml-training.csv", "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+downloadIfDoesNotExist("pml-testing.csv", "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+The data can be loaded using the script below. The *na.strings* option is there to remove the invalid values present on the data - particularly, blank spaces and **#DIV/0**.
+
+```{r}
+training <- read.csv("pml-training.csv", na.strings = c('#DIV/0!', '', 'NA'), stringsAsFactors = T)
+testing  <- read.csv("pml-testing.csv", na.strings = c('#DIV/0!', '', 'NA'), stringsAsFactors = T)
+```
+
+The training data has `ncol(training)` columns and `nrow(training)` samples, while the test data has `nrow(testing)` samples. A summary of the training set is given below.
+
+```{r}
+str(training, list.len = 10)
+```
+
+The correctness of the exercise is given by the *classe* variable. Class A corresponds to the correct movement, while the other 4 classes correspond to common mistakes while exercising. A quick analysis shows that those classes are well-balanced, even across test subjects.
+
+```{r}
+summary(training$classe)
+prop.table(table(training$user_name, training$classe), 1)
+```
+
+# Data Manipulation
+
+## Cleaning
+
+Based on the data description, we notice that the first six columns are there for reference purposes, and does not help explaining the classes. We can safely remove them from the data.
+
+```{r}
+training <- training[,7:160]
+testing  <- testing[,7:160]
+```
+
+Furthermore, we check how much valid data each column has.
+
+```{r, fig.width=11}
+library(lattice)
+na.count <- function(x) { sum(is.na(x)) / nrow(training) }
+training_na_count <- sapply(training, na.count)
+histogram(training_na_count, breaks = 200, xlab = "NA Values (%)", ylab = "Percent of Columns", col = "gray")
+```
+
+It is pretty noticeable that more than half of the columns are primarily made of NA's, making them rather questionable about their usefulness. We'll be removing them for this analysis.
+
+```{r}
+training <- training[,training_na_count < 0.9]
+testing  <- testing[,training_na_count < 0.9]
+dim(training)
+dim(testing)
+```
+
+## Partitioning
+
+We use the *caret* library to split the training data into two to perform cross-validation, sampling 60% of the data to train our classifier and using the remaining 40% to evaluate its accuracy.
+
+```{r}
+library(caret)
+
+set.seed(12345)
+inTrain <- createDataPartition(y = training$classe, p = 0.6, list = F)
+training_real <- training[inTrain,]  # Training
+training_cv   <- training[-inTrain,] # Cross Validation
+```
+
+## Near-Zero Variance Predictors
+
+Before training the classifiers, we will check if there are any predictors with very low variances. This usually happens for predictors that have few unique values and a large gap between the first and second most frequent values.
+
+```{r}
+nzv <- nearZeroVar(training_real)
+nzv
+```
+
+This output has shown that there are no near-zero variance predictors, therefore, no column needs to be removed from the training set.
+
+
+## Column Selection
+
+Before training our model, we can check which variables seem to have higher influence over the output *classe*. We can use Random Forest algorithm to evaluate their importance and select the most influential ones.
+
+```{r, fig.width=11, fig.height=11}
+library(randomForest)
+set.seed(31415)
+
+importance_model <- randomForest(classe ~ ., data = training_real, importance = T, ntree = 50)
+varImpPlot(importance_model)
+varImp(importance_model)
+```
+
+If we limit our classifier to use 10 variables, we can select *yaw_belt*, *roll_belt*, *pitch_belt*, *num_window*, *magnetic_dumbbell_y*, *magnetic_dumbbell_z*, *magnetic_forearm_z*, *pitch_forearm*, *accel_dumbbell_z* and *gyros_forearm_y*, based on the chart above.
+
+```{r}
+cols <- c("yaw_belt", "roll_belt", "pitch_belt", "num_window", "magnet_dumbbell_y", "magnet_dumbbell_z", "magnet_forearm_z", "pitch_forearm", "accel_dumbbell_z", "gyros_forearm_y", "classe")
+training_real <- training_real[, cols]
+training_cv   <- training_cv[, cols]
+```
+
+## Variable Correlations
+
+We can also check if there seems to be a correlation among those 10 variables.
+
+```{r}
+var_correlations <- cor(training_real[,-11])
+diag(var_correlations) <- 0
+which(abs(var_correlations) > 0.7, arr.ind = T)
+```
+
+Particularly, *roll_belt* and *yaw_belt* seem to be highly correlated (`cor(training_real$roll_belt, training_real$yaw_belt)`). This correlation is shown below:
+
+```{r, fig.width=11, fig.height=7}
+plot(training_real$roll_belt, training_real$yaw_belt, col = training_real$classe)
+```
+
+Considering how those variables are correlated, we can remove the *yaw_belt* variable, which is the first column of the datasets.
+
+```{r}
+training_real <- training_real[,-1]
+training_cv <- training_cv[,-1]
+```
+
+# Training
+
+In this section we will model our classifier using Random Forest with 100 trees and measure its accuracy using the cross-validation set. We will be testing two approaches:
+
+* Random Forest using the cleaned data as is.
+* Random Forest using Principal Component Analysis.
+
+
+## Using the Cleaned Data as is
+
+In this test we will build a classifier for the *classe* using the nine variables we have filtered on previous sections. This model will be evaluated using the cross-validation set and compared with the expected results using a confusion matrix.
+
+```{r}
+set.seed(237)
+model <- randomForest(classe ~ ., training_real, ntree = 100)
+cv_result <- predict(model, training_cv)
+model_matrix <- confusionMatrix(training_cv$classe, cv_result)
+model_matrix
+```
+
+The accuracy of the model has been estimated to be `as.numeric(model_matrix$overall[1]*100)`%. It is safe to say that the model's accuracy is much better than the proportion of the most frequent class (*No Information Rate*), as its p-value is very low.
+
+
+## Using Principal Component Analysis
+
+In this test we will build a classifier for the *classe* using Principal Component Analysis (PCA) to create new variables based on the variables we have filtered.
+
+```{r}
+prComp <- prcomp(training_real[,-10])
+prComp
+```
+
+Using the first two components, we can plot a chart, to visually check if we can actually explain the output from those two alone.
+
+```{r}
+typeColor <- training_real$classe
+plot(prComp$x[,1], prComp$x[,2], col=typeColor, xlab = "PC1", ylab = "PC2")
+```
+
+This chart has shown that the first two components can explain part of the data, but the amount of overlap hints that the other components will be necessary to build our model.
+
+```{r}
+set.seed(237)
+preproc_pca <- preProcess(training_real[,-10], method = "pca", pcaComp = 10)
+train_pca <- predict(preproc_pca, training_real[,-10])
+model_pca <- randomForest(training_real$classe ~ ., train_pca, ntree = 100)
+
+cv_pca <- predict(preproc_pca, training_cv)
+cv_pca_result <- predict(model_pca, cv_pca)
+confusionMatrix(training_cv$classe, cv_pca_result)
+```
+
+Interestingly, the model's accuracy is lower than the Random Forest using the filtered data as is.
+
+
+# Prediction
+
+Using the first model, the predictions of the 20 test samples can be made using the following script.
+
+```{r}
+predictions <- predict(model, testing)
+```
+
+Comparing those results to the expected values available on the course's prediction quiz, we can confirm that all 20 have been correctly predicted. We have not disclosed the actual predictions, as it is part of the course's grading process.
+
+
