@@ -60,11 +60,11 @@ testing  <- testing[,7:160]
 
 Furthermore, we check how much valid data each column has.
 
-```{r, fig.width=11}
+```{r, fig.width=6, fig.height=4}
 library(lattice)
 na.count <- function(x) { sum(is.na(x)) / nrow(training) }
 training_na_count <- sapply(training, na.count)
-histogram(training_na_count, breaks = 200, xlab = "NA Values (%)", ylab = "Percent of Columns", col = "gray")
+histogram(training_na_count, breaks = 50, xlab = "NA Values (%)", ylab = "Percent of Columns", col = "gray")
 ```
 
 It is pretty noticeable that more than half of the columns are primarily made of NA's, making them rather questionable about their usefulness. We'll be removing them for this analysis.
@@ -105,7 +105,7 @@ This output has shown that there are no near-zero variance predictors, therefore
 
 Before training our model, we can check which variables seem to have higher influence over the output *classe*. We can use Random Forest algorithm to evaluate their importance and select the most influential ones.
 
-```{r, fig.width=11, fig.height=11}
+```{r, fig.width=9, fig.height=6}
 library(randomForest)
 set.seed(31415)
 
@@ -132,13 +132,7 @@ diag(var_correlations) <- 0
 which(abs(var_correlations) > 0.7, arr.ind = T)
 ```
 
-Particularly, *roll_belt* and *yaw_belt* seem to be highly correlated (`cor(training_real$roll_belt, training_real$yaw_belt)`). This correlation is shown below:
-
-```{r, fig.width=11, fig.height=7}
-plot(training_real$roll_belt, training_real$yaw_belt, col = training_real$classe)
-```
-
-Considering how those variables are correlated, we can remove the *yaw_belt* variable, which is the first column of the datasets.
+Particularly, *roll_belt* and *yaw_belt* seem to be highly correlated (`cor(training_real$roll_belt, training_real$yaw_belt)`), which may bring harm to our model. As countermeasure, we will be removing the *yaw_belt* variable, which is the first column of the datasets.
 
 ```{r}
 training_real <- training_real[,-1]
@@ -179,7 +173,7 @@ prComp
 
 Using the first two components, we can plot a chart, to visually check if we can actually explain the output from those two alone.
 
-```{r}
+```{r, fig.width = 5, fig.height = 4}
 typeColor <- training_real$classe
 plot(prComp$x[,1], prComp$x[,2], col=typeColor, xlab = "PC1", ylab = "PC2")
 ```
